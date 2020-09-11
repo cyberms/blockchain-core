@@ -24,7 +24,8 @@
         xxhash,
         exor_filter,
         merkerl,
-        erbloom
+        erbloom,
+        base64url
     ]},
     {env,[]},
     {modules, []},
