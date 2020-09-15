@@ -2222,6 +2222,7 @@ find_routing_via_eui(DevEUI, AppEUI, Ledger) ->
     %% ok, search the xor filters
     Key = <<DevEUI:64/integer-unsigned-little, AppEUI:64/integer-unsigned-little>>,
     RoutingCF = routing_cf(Ledger),
+    lager:warning("MATIAS DevEUI ~p, AppEUI ~p, RoutingCF ~p", [DevEUI, AppEUI, RoutingCF]),
     Res = cache_fold(Ledger, RoutingCF,
                      fun({<<_OUI:32/integer-unsigned-big>>, V}, Acc) ->
                              Route = blockchain_ledger_routing_v1:deserialize(V),
@@ -2250,6 +2251,7 @@ find_routing_via_devaddr(DevAddr0, Ledger=#ledger_v1{db=DB}) ->
     case <<DevAddr0:32/integer-unsigned-little>> of
         <<DevAddr:25/integer-unsigned-little, DevAddrPrefix:7/integer>> ->
             %% use the subnets
+            lager:warning("MATIAS find_routing_via_devaddr DevAddr ~p", [DevAddr0]),
             SubnetCF = subnets_cf(Ledger),
             {ok, Itr} = rocksdb:iterator(DB, SubnetCF, []),
             Dest = subnet_lookup(Itr, DevAddr, rocksdb:iterator_move(Itr, {seek_for_prev, <<DevAddr:25/integer-unsigned-big, ?BITS_23:23/integer>>})),
@@ -3040,8 +3042,10 @@ increment_bin(Binary) ->
 subnet_lookup(Itr, DevAddr, {ok, <<Base:25/integer-unsigned-big, Mask:23/integer-unsigned-big>>, <<Dest:32/integer-unsigned-little>>}) ->
     case (DevAddr band (Mask bsl 2)) == Base of
         true ->
+            lager:warning("MATIAS subnet_lookup DevAddr ~p", [DevAddr]),
             Dest;
         false ->
+            lager:warning("MATIAS subnet_lookup DevAddr ~p", [DevAddr]),
             subnet_lookup(Itr, DevAddr, rocksdb:iterator_move(Itr, prev))
     end;
 subnet_lookup(_, _, _) ->
