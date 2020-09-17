@@ -75,10 +75,10 @@ new(RoutingInfo, Type, Payload, TimeStamp, SignalStrength, Frequency, DataRate, 
 routing_info(#packet_pb{routing=RoutingInfo}) ->
     case RoutingInfo of
         #routing_information_pb{data={devaddr, DevAddr}} ->
-            lager:warning("MATIAS routing_info DevAddr ~p", [DevAddr]),
+            lager:warning("MATIAS routing_info DevAddr ~p", [integer_to_list(DevAddr, 16)]),
             {devaddr, DevAddr};
         #routing_information_pb{data={eui, #eui_pb{deveui=DevEUI, appeui=AppEUI}}} ->
-            lager:warning("MATIAS routing_info DevEUI ~p, AppEUI ~p, eui ~p", [DevEUI, AppEUI, eui]),
+            lager:warning("MATIAS routing_info DevEUI ~p, AppEUI ~p, eui ~p", [integer_to_list(DevEUI, 16), integer_to_list(AppEUI, 16), eui]),
             {eui, DevEUI, AppEUI}
     end.
 
@@ -124,10 +124,10 @@ decode(BinaryPacket) ->
 
 -spec make_routing_info(routing_info()) -> routing_information().
 make_routing_info({devaddr, DevAddr}) ->
-    lager:warning("MATIAS make_routing_info DevAddr ~p", [DevAddr]),
+    lager:warning("MATIAS make_routing_info DevAddr ~p", [integer_to_list(DevAddr, 16)]),
     #routing_information_pb{data={devaddr, DevAddr}};
 make_routing_info({eui, DevEUI, AppEUI}) ->
-    lager:warning("MATIAS make_routing_info DevEUI ~p, AppEUI ~p, eui ~p", [DevEUI, AppEUI, eui]),
+    lager:warning("MATIAS make_routing_info DevEUI ~p, AppEUI ~p, eui ~p", [integer_to_list(DevEUI, 16), integer_to_list(AppEUI, 16), eui]),
     #routing_information_pb{data={eui, #eui_pb{deveui=DevEUI, appeui=AppEUI}}}.
 
 %% ------------------------------------------------------------------
