@@ -2222,7 +2222,7 @@ find_routing_via_eui(DevEUI, AppEUI, Ledger) ->
     %% ok, search the xor filters
     Key = <<DevEUI:64/integer-unsigned-little, AppEUI:64/integer-unsigned-little>>,
     RoutingCF = routing_cf(Ledger),
-    lager:warning("MATIAS DevEUI ~p, AppEUI ~p, RoutingCF ~p", [integer_to_list(DevEUI, 16), integer_to_list(AppEUI, 16), integer_to_list(RoutingCF, 16)]),
+    lager:warning("MATIAS DevEUI ~p, AppEUI ~p, RoutingCF ~p", [integer_to_list(DevEUI, 16), integer_to_list(AppEUI, 16), RoutingCF]),
     Res = cache_fold(Ledger, RoutingCF,
                      fun({<<_OUI:32/integer-unsigned-big>>, V}, Acc) ->
                              Route = blockchain_ledger_routing_v1:deserialize(V),
