@@ -5,6 +5,8 @@
 %%%-------------------------------------------------------------------
 -module(blockchain_utils).
 
+-include("blockchain_json.hrl").
+
 -export([
     shuffle_from_hash/2,
     shuffle/1,
@@ -13,11 +15,13 @@
     challenge_interval/1,
     serialize_hash/1, deserialize_hash/1,
     hex_to_bin/1, bin_to_hex/1,
+    poc_id/1,
     pmap/2,
     addr2name/1,
     distance/2,
     score_gateways/1,
     free_space_path_loss/2,
+    free_space_path_loss/3,
     vars_binary_keys_to_atoms/1,
     icdf_select/2,
     find_txn/2,
@@ -25,10 +29,19 @@
     bitvector_to_map/2,
     get_pubkeybin_sigfun/1,
     approx_blocks_in_week/1,
-    vars_keys_to_list/1,
+    keys_list_to_bin/1,
+    bin_keys_to_list/1,
     calculate_dc_amount/2, calculate_dc_amount/3,
     do_calculate_dc_amount/2,
-    deterministic_subset/3
+    deterministic_subset/3,
+
+    %% exports for simulations
+    free_space_path_loss/4,
+    free_space_path_loss/5,
+    min_rcv_sig/1, min_rcv_sig/2,
+    index_of/2,
+
+    verify_multisig/3
 ]).
 
 -ifdef(TEST).
@@ -146,6 +159,11 @@ bin_to_hex(Bin) ->
 hex_to_bin(Hex) ->
   << begin {ok, [V], []} = io_lib:fread("~16u", [X, Y]), <<V:8/integer-little>> end || <<X:8/integer, Y:8/integer>> <= Hex >>.
 
+-spec poc_id(libp2p_crypto:pubkey_bin()) -> binary().
+poc_id(PubKeyBin) when is_binary(PubKeyBin) ->
+    Hash = crypto:hash(sha256, PubKeyBin),
+    ?BIN_TO_B64(Hash).
+
 pmap(F, L) ->
     Width = application:get_env(blockchain, validation_width, 3),
     pmap(F, L, Width).
@@ -181,6 +199,7 @@ partition_list(L, [H | T], Acc) ->
     {Take, Rest} = lists:split(H, L),
     partition_list(Rest, T, [Take | Acc]).
 
+addr2name(undefined) -> undefined;
 addr2name(Addr) ->
     B58Addr = libp2p_crypto:bin_to_b58(Addr),
     {ok, N} = erl_angry_purple_tiger:animal_name(B58Addr),
@@ -243,6 +262,39 @@ free_space_path_loss(Loc1, Loc2) ->
     Distance = blockchain_utils:distance(Loc1, Loc2),
     %% TODO support regional parameters for non-US based hotspots
     ?TRANSMIT_POWER - (32.44 + 20*math:log10(?FREQUENCY) + 20*math:log10(Distance) - ?MAX_ANTENNA_GAIN - ?MAX_ANTENNA_GAIN).
+
+-spec free_space_path_loss(Loc1 :: h3:index(),
+                           Loc2 :: h3:index(),
+                           Frequency :: float() | undefined) -> float().
+free_space_path_loss(Loc1, Loc2, undefined) ->
+    %% No frequency specified, defaulting to US915. Definitely incorrect.
+    Distance = blockchain_utils:distance(Loc1, Loc2),
+    10*math:log10(math:pow((4*math:pi()*(?FREQUENCY*1000000)*(Distance*1000))/(299792458), 2));
+free_space_path_loss(Loc1, Loc2, Frequency) ->
+    Distance = blockchain_utils:distance(Loc1, Loc2),
+    10*math:log10(math:pow((4*math:pi()*(Frequency*1000000)*(Distance*1000))/(299792458), 2))-1.8-1.8.
+
+free_space_path_loss(Loc1, Loc2, Gt, Gl) ->
+    Distance = blockchain_utils:distance(Loc1, Loc2),
+    %% TODO support regional parameters for non-US based hotspots
+    %% TODO support variable Dt,Dr values for better FSPL values
+    %% FSPL = 10log_10(Dt*Dr*((4*pi*f*d)/(c))^2)
+    %%
+    (10*math:log10(math:pow((4*math:pi()*(?FREQUENCY*1000000)*(Distance*1000))/(299792458), 2)))-Gt-Gl.
+free_space_path_loss(Loc1, Loc2, Frequency, Gt, Gl) ->
+    Distance = blockchain_utils:distance(Loc1, Loc2),
+    %% TODO support regional parameters for non-US based hotspots
+    %% TODO support variable Dt,Dr values for better FSPL values
+    %% FSPL = 10log_10(Dt*Dr*((4*pi*f*d)/(c))^2)
+    %%
+    (10*math:log10(math:pow((4*math:pi()*(Frequency*1000000)*(Distance*1000))/(299792458), 2)))-Gt-Gl.
+
+%% Subtract FSPL from our transmit power to get the expected minimum received signal.
+-spec min_rcv_sig(float(), float()) -> float().
+min_rcv_sig(Fspl, TxGain) ->
+   TxGain - Fspl.
+min_rcv_sig(Fspl) ->
+   ?TRANSMIT_POWER - Fspl.
 
 -spec vars_binary_keys_to_atoms(map()) -> map().
 vars_binary_keys_to_atoms(Vars) ->
@@ -324,7 +376,7 @@ approx_blocks_in_week(Ledger) ->
             10000
     end.
 
--spec vars_keys_to_list( Data :: binary() ) -> [ binary() ].
+-spec bin_keys_to_list( Data :: binary() ) -> [ binary() ].
 %% @doc Price oracle public keys and also staking keys are encoded like this
 %% <code>
 %% <<KeyLen1/integer, Key1/binary, KeyLen2/integer, Key2/binary, ...>>
@@ -332,9 +384,19 @@ approx_blocks_in_week(Ledger) ->
 %% This function takes the length tagged binary keys, removes the length tag
 %% and returns a list of binary keys
 %% @end
-vars_keys_to_list(Data) when is_binary(Data) ->
+bin_keys_to_list(Data) when is_binary(Data) ->
     [ Key || << Len:8/unsigned-integer, Key:Len/binary >> <= Data ].
 
+-spec keys_list_to_bin( [binary()] ) -> binary().
+%% @doc Price oracle public keys and also staking keys are encoded like this
+%% <code>
+%% <<KeyLen1/integer, Key1/binary, KeyLen2/integer, Key2/binary, ...>>
+%% </code>
+%% This function takes the length tagged binary keys, removes the length tag
+%% and returns a list of binary keys
+%% @end
+keys_list_to_bin(Keys) ->
+    << <<(byte_size(Key)):8/integer, Key/binary>> || Key <- Keys >>.
 
 %%--------------------------------------------------------------------
 %% @doc deterministic random subset from a random seed
@@ -352,6 +414,46 @@ deterministic_subset(Limit, RandState, L) ->
     TruncList0 = lists:sublist(lists:sort(FullList), Limit),
     {_, TruncList} = lists:unzip(TruncList0),
     {RandState1, TruncList}.
+
+-spec index_of(any(), [any()]) -> pos_integer().
+index_of(Item, List) -> index_of(Item, List, 1).
+
+index_of(_, [], _)  -> not_found;
+index_of(Item, [Item|_], Index) -> Index;
+index_of(Item, [_|Tl], Index) -> index_of(Item, Tl, Index+1).
+
+verify_multisig(Artifact, Sigs, Keys) ->
+    %% using the number of keys is safe for the total because keys
+    %% comes directly out of the ledger rather than from the submitter.
+    Total = length(Keys),
+    lager:debug("sigs ~p keys ~p", [Sigs, Keys]),
+    Votes = count_votes(Artifact, Keys, Sigs),
+    %% this code is still good, uncomment to get majority voting
+    %% Majority = majority(Total),
+    %% lager:debug("votes ~p, majority: ~p", [Votes, Majority]),
+    Votes == Total.
+
+count_votes(Artifact, MultiKeys, Proofs) ->
+    count_votes(Artifact, MultiKeys, Proofs, 0).
+
+count_votes(_Artifact, _MultiKeys, [], Acc) ->
+    Acc;
+count_votes(Artifact, MultiKeys, [Proof | Proofs], Acc) ->
+    case lists:filter(
+           fun(Key) ->
+                   libp2p_crypto:verify(Artifact, Proof,
+                                        libp2p_crypto:bin_to_pubkey(Key))
+           end, MultiKeys) of
+        %% proof didn't match any keys
+        [] ->
+            count_votes(Artifact, MultiKeys, Proofs, Acc);
+        [GoodKey] ->
+            count_votes(Artifact, lists:delete(GoodKey, MultiKeys),
+                        Proofs, Acc + 1)
+    end.
+
+%% majority(N) ->
+%%     N div 2 + 1.
 
 %% ------------------------------------------------------------------
 %% EUNIT Tests
@@ -411,8 +513,8 @@ oracle_keys_test() ->
     #{ public := RawEdPK } = libp2p_crypto:generate_keys(ed25519),
     EccPK = libp2p_crypto:pubkey_to_bin(RawEccPK),
     EdPK = libp2p_crypto:pubkey_to_bin(RawEdPK),
-    TestOracleKeys = << <<(byte_size(Key)):8/integer, Key/binary>> || Key <- [EccPK, EdPK] >>,
-    Results = vars_keys_to_list(TestOracleKeys),
+    TestOracleKeys = keys_list_to_bin([EccPK, EdPK]),
+    Results = bin_keys_to_list(TestOracleKeys),
     ?assertEqual([EccPK, EdPK], Results),
     Results1 = [ libp2p_crypto:bin_to_pubkey(K) || K <- Results ],
     ?assertEqual([RawEccPK, RawEdPK], Results1).
