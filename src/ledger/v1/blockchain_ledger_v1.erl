@@ -30,6 +30,7 @@
     htlcs/1,
 
     master_key/1, master_key/2,
+    multi_keys/1, multi_keys/2,
 
     vars/3,
     config/2,  % no version with default, use the set value or fail
@@ -43,6 +44,7 @@
     update_gateway/3,
     fixup_neighbors/4,
     add_gateway_location/4,
+    insert_witnesses/3,
     add_gateway_witnesses/3,
     refresh_gateway_witnesses/2,
 
@@ -178,6 +180,7 @@
 -include("blockchain.hrl").
 -include("blockchain_vars.hrl").
 -include("blockchain_txn_fees.hrl").
+-include_lib("helium_proto/include/blockchain_txn_poc_receipts_v1_pb.hrl").
 
 -ifdef(TEST).
 -export([median/1]).
@@ -215,6 +218,7 @@
 -define(ELECTION_EPOCH, <<"election_epoch">>).
 -define(OUI_COUNTER, <<"oui_counter">>).
 -define(MASTER_KEY, <<"master_key">>).
+-define(MULTI_KEYS, <<"multi_keys">>).
 -define(VARS_NONCE, <<"vars_nonce">>).
 -define(BURN_RATE, <<"token_burn_exchange_rate">>).
 -define(CURRENT_ORACLE_PRICE, <<"current_oracle_price">>). %% stores the current calculated price
@@ -877,6 +881,23 @@ master_key(NewKey, Ledger) ->
     DefaultCF = default_cf(Ledger),
     cache_put(Ledger, DefaultCF, ?MASTER_KEY, NewKey).
 
+-spec multi_keys(ledger()) -> {ok, [binary()]} | {error, any()}.
+multi_keys(Ledger) ->
+    DefaultCF = default_cf(Ledger),
+    case cache_get(Ledger, DefaultCF, ?MULTI_KEYS, []) of
+        {ok, MultiKeysBin} ->
+            {ok, blockchain_utils:bin_keys_to_list(MultiKeysBin)};
+        not_found ->
+            {ok, []};
+        Error ->
+            Error
+    end.
+
+-spec multi_keys([binary()], ledger()) -> ok | {error, any()}.
+multi_keys(NewKeys, Ledger) ->
+    DefaultCF = default_cf(Ledger),
+    cache_put(Ledger, DefaultCF, ?MULTI_KEYS, blockchain_utils:keys_list_to_bin(NewKeys)).
+
 vars(Vars, Unset, Ledger) ->
     DefaultCF = default_cf(Ledger),
     maps:map(
@@ -1192,6 +1213,44 @@ update_gateway_oui(Gateway, OUI, Nonce, Ledger) ->
             NewGw0 = blockchain_ledger_gateway_v2:oui(OUI, Gw),
             NewGw = blockchain_ledger_gateway_v2:nonce(Nonce, NewGw0),
             update_gateway(NewGw, Gateway, Ledger)
+    end.
+
+-spec insert_witnesses(PubkeyBin :: libp2p_crypto:pubkey_bin(),
+                       Witnesses :: [blockchain_poc_witness_v1:poc_witness() | blockchain_poc_receipt_v1:poc_receipt()],
+                       Ledger :: ledger()) -> ok | {error, any()}.
+insert_witnesses(PubkeyBin, Witnesses, Ledger) ->
+    case blockchain:config(?poc_version, Ledger) of
+        %% only works with poc-v9 and above
+        {ok, V} when V >= 9 ->
+            case ?MODULE:find_gateway_info(PubkeyBin, Ledger) of
+                {error, _}=Error ->
+                    Error;
+                {ok, GW0} ->
+                    GW1 = lists:foldl(fun(#blockchain_poc_witness_v1_pb{}=POCWitness, GW) ->
+                                              WitnessPubkeyBin = blockchain_poc_witness_v1:gateway(POCWitness),
+                                              case ?MODULE:find_gateway_info(WitnessPubkeyBin, Ledger) of
+                                                  {ok, WitnessGw} ->
+                                                      blockchain_ledger_gateway_v2:add_witness({poc_witness, WitnessPubkeyBin, WitnessGw, POCWitness, GW});
+                                                  {error, Reason} ->
+                                                      lager:warning("exiting trying to add witness", [Reason]),
+                                                      erlang:error({insert_witnesses_error, Reason})
+                                              end;
+                                         (#blockchain_poc_receipt_v1_pb{}=POCWitness, GW) ->
+                                              ReceiptPubkeyBin = blockchain_poc_receipt_v1:gateway(POCWitness),
+                                              case ?MODULE:find_gateway_info(ReceiptPubkeyBin, Ledger) of
+                                                  {ok, ReceiptGw} ->
+                                                      blockchain_ledger_gateway_v2:add_witness({poc_receipt, ReceiptPubkeyBin, ReceiptGw, POCWitness, GW});
+                                                  {error, Reason} ->
+                                                      lager:warning("exiting trying to add witness", [Reason]),
+                                                      erlang:error({insert_witnesses_error, Reason})
+                                              end;
+                                         (_, _) ->
+                                              erlang:error({invalid, unknown_witness_type})
+                                      end, GW0, Witnesses),
+                    update_gateway(GW1, PubkeyBin, Ledger)
+            end;
+        _ ->
+            {error, incorrect_poc_version}
     end.
 
 -spec add_gateway_witnesses(GatewayAddress :: libp2p_crypto:pubkey_bin(),
@@ -1548,7 +1607,7 @@ calc_remaining_dcs(SC) ->
 staking_keys(Ledger)->
     case blockchain:config(?staking_keys, Ledger) of
         {error, not_found} -> not_found;
-        {ok, V} -> blockchain_utils:vars_keys_to_list(V)
+        {ok, V} -> blockchain_utils:bin_keys_to_list(V)
     end.
 
 %%--------------------------------------------------------------------
@@ -1711,7 +1770,7 @@ recalc_price(LastPrice, BlockT, _DefaultCF, Ledger) ->
     {ok, Prices} = current_oracle_price_list(Ledger),
     NewPriceList = trim_price_list(EndScan, Prices),
     {ok, RawOracleKeys} = blockchain:config(?price_oracle_public_keys, Ledger),
-    Maximum = length(blockchain_utils:vars_keys_to_list(RawOracleKeys)),
+    Maximum = length(blockchain_utils:bin_keys_to_list(RawOracleKeys)),
     Minimum = (Maximum div 2) + 1,
 
     ValidPrices = lists:foldl(
